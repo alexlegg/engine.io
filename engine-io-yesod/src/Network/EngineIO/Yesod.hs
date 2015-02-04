@@ -22,7 +22,7 @@ import Network.HTTP.Types.Status as St
 
 --------------------------------------------------------------------------------
 -- | A drop in 'EIO.ServerAPI' that works in Yesod's 'Handler' monad.
-yesodAPI :: (YC.MonadHandler m, YC.MonadBaseControl IO m) => EIO.ServerAPI m
+yesodAPI :: (YC.MonadIO m, YC.MonadHandler m, YC.MonadBaseControl IO m) => EIO.ServerAPI (YC.HandlerT s m) (YC.HandlerT s IO)
 yesodAPI = EIO.ServerAPI
   { EIO.srvTerminateWithResponse = \code ct builder -> do
       let status = filter ((==) code . St.statusCode) [St.status100..St.status511]
@@ -46,4 +46,6 @@ yesodAPI = EIO.ServerAPI
       YC.sendRawResponseNoConduit $ \src sink ->
         YC.liftIO $ WaiWS.runWebSockets WS.defaultConnectionOptions
           (WaiWS.getRequestHead req) app src sink
+
+  , EIO.srvSocketAppToIO = YC.handlerToIO
   }

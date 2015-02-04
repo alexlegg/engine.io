@@ -15,7 +15,7 @@ import qualified Snap.Core as Snap
 --------------------------------------------------------------------------------
 -- | A drop in 'EIO.ServerAPI' that works in any Snap monad - including both
 -- @Handler@ and @Snap@.
-snapAPI :: Snap.MonadSnap m => EIO.ServerAPI m
+snapAPI :: Snap.MonadSnap m => EIO.ServerAPI m IO
 snapAPI = EIO.ServerAPI
   { EIO.srvTerminateWithResponse = \code ct body -> do
       Snap.modifyResponse $ Snap.setResponseCode code . Snap.setContentType ct
@@ -46,4 +46,6 @@ snapAPI = EIO.ServerAPI
         Snap.Method method -> method
 
   , EIO.srvRunWebSocket = Snap.runWebSocketsSnap
+
+  , EIO.srvSocketAppToIO = return id
   }

@@ -141,8 +141,7 @@ encodePacket (Packet pt attachments n pId json) =
 
 
 --------------------------------------------------------------------------------
-type EventHandler a = ReaderT Socket IO a
-
+type EventHandler m a = ReaderT Socket m a
 
 --------------------------------------------------------------------------------
 {-|
@@ -162,10 +161,10 @@ convenience 'on' family of functions.
 
 -}
 initialize
-  :: MonadIO m
-  => EIO.ServerAPI m
-  -> StateT RoutingTable (ReaderT Socket m) a
-  -> IO (m ())
+  :: (MonadIO m2, Functor m2, MonadIO m1)
+  => EIO.ServerAPI m1 m2
+  -> StateT (RoutingTable m2) (ReaderT Socket m1) a
+  -> IO (m1 ())
 initialize api socketHandler = do
   eio <- EIO.initialize
 
@@ -175,8 +174,10 @@ initialize api socketHandler = do
       routingTable <- flip runReaderT wrappedSocket $
         execStateT socketHandler (RoutingTable mempty (return ()))
 
+      runAppInIO <- EIO.srvSocketAppToIO api
+
       return $ EIO.SocketApp
-        { EIO.saApp = flip runReaderT wrappedSocket $ do
+        { EIO.saApp = runAppInIO $ flip runReaderT wrappedSocket $ do
             emitPacketTo wrappedSocket (Packet Connect Nothing "/" Nothing Nothing)
 
             forever $ do
@@ -195,7 +196,7 @@ initialize api socketHandler = do
 
                 Left e -> error $ "Attoparsec failed: " ++ show e
 
-        , EIO.saOnDisconnect = runReaderT (rtDisconnect routingTable) wrappedSocket
+        , EIO.saOnDisconnect = runAppInIO $ runReaderT (rtDisconnect routingTable) wrappedSocket
         }
 
   return (EIO.handler eio eioHandler api)
@@ -227,21 +228,21 @@ engineIOSocket = socketEIOSocket
 --------------------------------------------------------------------------------
 -- | A per-connection routing table. This table determines what actions to
 -- invoke when events are received.
-data RoutingTable = RoutingTable
-  { rtEvents :: HashMap.HashMap Text.Text (Aeson.Array -> MaybeT (ReaderT Socket IO) ())
-  , rtDisconnect :: EventHandler ()
+data RoutingTable m = RoutingTable
+  { rtEvents :: HashMap.HashMap Text.Text (Aeson.Array -> MaybeT (ReaderT Socket m) ())
+  , rtDisconnect :: EventHandler m ()
   }
-
 
 --------------------------------------------------------------------------------
 -- | When an event with a given name is received, call the associated function
 -- with the array of JSON arguments.
 onJSON
-  :: (MonadState RoutingTable m)
+  :: (Functor m', MonadIO m', MonadState (RoutingTable m') m)
   => Text.Text
-  -> (Aeson.Array -> EventHandler a)
+  -> (Aeson.Array -> EventHandler m' a)
   -> m ()
 onJSON eventName handler =
+  
   modify $ \rt -> rt
     { rtEvents =
         HashMap.insertWith (\new old json -> old json <|> new json)
@@ -271,7 +272,7 @@ instance (Aeson.FromJSON a, OnArgs b r) => OnArgs (a -> b) r where
 -- decoded by a 'Aeson.FromJSON' instance, run the associated function
 -- after decoding the event argument. Expects exactly one event argument.
 on
-  :: (MonadState RoutingTable m, OnArgs f (EventHandler a))
+  :: (MonadIO m', Functor m', MonadState (RoutingTable m') m, OnArgs f (EventHandler m' a))
   => Text.Text -> f -> m ()
 on eventName handler =
   let eventHandler v =
@@ -289,9 +290,9 @@ on eventName handler =
 -- | When an event is received with a given name and no arguments, run the
 -- associated 'EventHandler'.
 on_
-  :: (MonadState RoutingTable m)
+  :: (MonadIO m', Functor m', MonadState (RoutingTable m') m, OnArgs f (EventHandler m' a))
   => Text.Text
-  -> EventHandler a
+  -> EventHandler m' a
   -> m ()
 on_ e f = on e (void f)
 {-# DEPRECATED on_ "Use Network.SocketIO.on instead" #-}
@@ -301,7 +302,7 @@ on_ e f = on e (void f)
 -- | Run the given IO action when a client disconnects, along with any other
 -- previously register disconnect handlers.
 appendDisconnectHandler
-  :: MonadState RoutingTable m => EventHandler () -> m ()
+  :: (MonadIO m', MonadState (RoutingTable m') m) => EventHandler m' () -> m ()
 appendDisconnectHandler handler = modify $ \rt -> rt
   { rtDisconnect = do rtDisconnect rt
                       handler

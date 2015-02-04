@@ -78,7 +78,6 @@ import qualified Data.Attoparsec.ByteString.Char8 as AttoparsecC8
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Char8 as BSChar8
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Text as Text
@@ -323,25 +322,28 @@ send Socket{..} = STM.writeTChan socketOutgoingMessages
 --------------------------------------------------------------------------------
 -- | A dictionary of functions that Engine.IO needs in order to provide
 -- communication channels.
-data ServerAPI m = ServerAPI
-  { srvGetQueryParams :: m (HashMap.HashMap BS.ByteString [BS.ByteString])
+data ServerAPI m1 m2 = ServerAPI
+  { srvGetQueryParams :: m1 (HashMap.HashMap BS.ByteString [BS.ByteString])
     -- ^ Retrieve the 'HashMap.HashMap' of query parameters in the request path
     -- to their zero-or-more values.
 
-  , srvTerminateWithResponse :: Int -> BS.ByteString -> Builder.Builder -> forall a . m a
+  , srvTerminateWithResponse :: Int -> BS.ByteString -> Builder.Builder -> forall a . m1 a
     -- ^ Send a response with the given status code, content type and body. This
     -- should also terminate the web request entirely, such that further actions
     -- in @m@ have no effect.
 
-  , srvParseRequestBody :: forall a. Attoparsec.Parser a -> m (Either String a)
+  , srvParseRequestBody :: forall a. Attoparsec.Parser a -> m1 (Either String a)
     -- ^ Run a 'Attoparsec.Parser' against the request body.
 
-  , srvGetRequestMethod :: m BS.ByteString
+  , srvGetRequestMethod :: m1 BS.ByteString
     -- ^ Get the request method of the current request. The request method
     -- should be in uppercase for standard methods (e.g., @GET@).
 
-  , srvRunWebSocket :: WebSockets.ServerApp -> m ()
+  , srvRunWebSocket :: WebSockets.ServerApp -> m1 ()
     -- ^ Upgrade the current connection to run a WebSocket action.
+  
+  , srvSocketAppToIO :: forall a . m1 (m2 a -> IO a)
+    -- ^ Convert computation from a handler monad to IO
   }
 
 
@@ -401,7 +403,7 @@ collecting cookies. This function then returns a 'ServerApp', describing the
 main loop and an action to perform on socket disconnection.
 
 -}
-handler :: MonadIO m => EngineIO -> (Socket -> m SocketApp) -> ServerAPI m -> m ()
+handler :: MonadIO m => EngineIO -> (Socket -> m SocketApp) -> ServerAPI m m2 -> m ()
 handler eio socketHandler api@ServerAPI{..} = do
   queryParams <- srvGetQueryParams
   eitherT (serveError api) return $ do
@@ -446,7 +448,7 @@ freshSession
   :: MonadIO m
   => EngineIO
   -> (Socket -> m SocketApp)
-  -> ServerAPI m
+  -> ServerAPI m m2
   -> Bool
   -> m ()
 freshSession eio socketHandler api supportsBinary = do
@@ -534,7 +536,7 @@ freshSession eio socketHandler api supportsBinary = do
   pingTimeout = 60
 
 --------------------------------------------------------------------------------
-upgrade :: MonadIO m => ServerAPI m -> Socket -> m ()
+upgrade :: MonadIO m => ServerAPI m m2 -> Socket -> m ()
 upgrade ServerAPI{..} socket = srvRunWebSocket go
 
   where
@@ -603,7 +605,7 @@ upgrade ServerAPI{..} socket = srvRunWebSocket go
 
 
 --------------------------------------------------------------------------------
-handlePoll :: MonadIO m => ServerAPI m -> Transport -> Bool -> m ()
+handlePoll :: MonadIO m => ServerAPI m m2 -> Transport -> Bool -> m ()
 handlePoll api@ServerAPI{..} transport supportsBinary = do
   requestMethod <- srvGetRequestMethod
   case requestMethod of
@@ -649,7 +651,7 @@ handlePoll api@ServerAPI{..} transport supportsBinary = do
 
 
 --------------------------------------------------------------------------------
-writeBytes :: Monad m => ServerAPI m -> Builder.Builder -> m a
+writeBytes :: Monad m => ServerAPI m m2 -> Builder.Builder -> m a
 writeBytes ServerAPI {..} builder = do
   srvTerminateWithResponse 200 "application/octet-stream" builder
 {-# INLINE writeBytes #-}
@@ -681,7 +683,7 @@ instance Aeson.ToJSON OpenMessage where
 
 
 --------------------------------------------------------------------------------
-serveError :: Monad m => ServerAPI m -> EngineIOError -> m a
+serveError :: Monad m => ServerAPI m m2 -> EngineIOError -> m a
 serveError ServerAPI{..} e = srvTerminateWithResponse 400 "application/json" $
   Builder.lazyByteString $ Aeson.encode $ Aeson.object
     [ "code" .= errorCode, "message" .= errorMessage ]
