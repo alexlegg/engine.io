@@ -9,6 +9,7 @@ import Data.Conduit (($$))
 import Data.Conduit.Lift (runCatchC)
 import Data.Conduit.Attoparsec (sinkParser)
 import Data.Monoid (mappend)
+import Control.Monad.Catch
 import Control.Monad (unless)
 
 import qualified Data.ByteString.Builder as Builder
@@ -22,7 +23,7 @@ import Network.HTTP.Types.Status as St
 
 --------------------------------------------------------------------------------
 -- | A drop in 'EIO.ServerAPI' that works in Yesod's 'Handler' monad.
-yesodAPI :: (YC.MonadIO m, YC.MonadHandler m, YC.MonadBaseControl IO m) => EIO.ServerAPI (YC.HandlerT s m) (YC.HandlerT s IO)
+yesodAPI :: (YC.MonadIO m, MonadCatch m, YC.MonadBaseControl IO m) => EIO.ServerAPI (YC.HandlerT s m) (YC.HandlerT s IO)
 yesodAPI = EIO.ServerAPI
   { EIO.srvTerminateWithResponse = \code ct builder -> do
       let status = filter ((==) code . St.statusCode) [St.status100..St.status511]
